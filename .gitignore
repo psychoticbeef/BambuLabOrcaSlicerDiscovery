@@ -1,0 +1,8 @@
+# Ignore YAML configuration file
+config.yaml
+
+# Ignore object files
+*.o
+
+# Ignore compiled executables
+ssdp_printer

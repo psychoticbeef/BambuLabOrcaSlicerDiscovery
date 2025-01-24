@@ -1,0 +1,13 @@
+[Unit]
+Description=Bambu Multicast Responder
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/home/psychoticbeef/ssdp/ssdp_printer
+Restart=always
+User=bse
+WorkingDirectory=/home/psychoticbeef/ssdp
+
+[Install]
+WantedBy=multi-user.target
