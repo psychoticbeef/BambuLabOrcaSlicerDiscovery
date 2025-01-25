@@ -1,6 +1,12 @@
-PRINTER_USN: "xxxxxxxxxxxxxxx"
-PRINTER_MODEL: "N2S"
-PRINTER_NAME: "Bamboozled"
-PRINTER_SIGNAL: "-44"
-LISTEN_ADDRESS: "192.168.1.y"
-PRINTER_ADDRESS: "192.168.2.b"
+listen_address: "192.168.1.x"
+printers:
+  Bamboozled:
+    usn: "xxxxxxxxxxxxxxx"
+    model: "N2S"
+    signal: "-44"
+    address: "192.168.4.x"
+  AnotherPrinter:
+    usn: "xxxxxxxxxxxxxxx"
+    model: "X3P"
+    signal: "-44"
+    address: "192.168.4.x"
