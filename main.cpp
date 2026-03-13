@@ -1,14 +1,20 @@
-#include <boost/array.hpp>
+#include <array>
 #include <boost/asio.hpp>
+#include <chrono>
+#include <ctime>
+#include <iomanip>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <vector>
 #include <yaml-cpp/yaml.h>
 
 using boost::asio::ip::udp;
 
+namespace Config {
 const std::string MULTICAST_ADDRESS = "239.255.255.250";
-const int SSDP_PORT = 2021;
+const unsigned short SSDP_PORT = 2021;
+} // namespace Config
 
 struct Printer {
   std::string name;
@@ -19,123 +25,126 @@ struct Printer {
 };
 
 std::string getCurrentTime() {
-  std::time_t now = std::time(nullptr);
-  char buf[80];
-  std::strftime(buf, sizeof(buf), "%a, %d %b %Y %H:%M:%S GMT",
-                std::gmtime(&now));
-  return std::string(buf);
+  auto now = std::chrono::system_clock::now();
+  auto time_t_now = std::chrono::system_clock::to_time_t(now);
+  std::ostringstream oss;
+  oss << std::put_time(std::gmtime(&time_t_now), "%a, %d %b %Y %H:%M:%S GMT");
+  return oss.str();
 }
 
-void loadConfig(const std::string &filePath, std::vector<Printer> &printers,
-                std::string &listenAddress) {
+void loadPrintersFromConfig(const std::string &filePath,
+                            std::vector<Printer> &printers,
+                            std::string &listenAddress) {
   YAML::Node config = YAML::LoadFile(filePath);
   listenAddress = config["listen_address"].as<std::string>();
-  YAML::Node printersNode = config["printers"];
-  for (auto it = printersNode.begin(); it != printersNode.end(); ++it) {
-    Printer printer;
-    printer.name = it->first.as<std::string>();
-    printer.usn = it->second["usn"].as<std::string>();
-    printer.model = it->second["model"].as<std::string>();
-    printer.signal = it->second["signal"].as<std::string>();
-    printer.address = it->second["address"].as<std::string>();
-    printers.push_back(printer);
+  for (const auto &node : config["printers"]) {
+    printers.push_back({node.first.as<std::string>(),
+                        node.second["usn"].as<std::string>(),
+                        node.second["model"].as<std::string>(),
+                        node.second["signal"].as<std::string>(),
+                        node.second["address"].as<std::string>()});
   }
 }
 
-std::vector<std::string> generatePackets(const std::vector<Printer> &printers) {
+std::string createPacket(const Printer &printer) {
+  std::ostringstream packetStream;
+  packetStream << "HTTP/1.1 200 OK\r\n"
+               << "Server: Buildroot/2018.02-rc3 UPnP/1.0 ssdpd/1.8\r\n"
+               << "Date: " << getCurrentTime() << "\r\n"
+               << "Location: " << printer.address << "\r\n"
+               << "ST: urn:bambulab-com:device:3dprinter:1\r\n"
+               << "EXT:\r\n"
+               << "USN: " << printer.usn << "\r\n"
+               << "Cache-Control: max-age=1800\r\n"
+               << "DevModel.bambu.com: " << printer.model << "\r\n"
+               << "DevName.bambu.com: " << printer.name << "\r\n"
+               << "DevSignal.bambu.com: " << printer.signal << "\r\n"
+               << "DevConnect.bambu.com: lan\r\n"
+               << "DevBind.bambu.com: free\r\n"
+               << "\r\n";
+  return packetStream.str();
+}
+
+std::vector<std::string> createPackets(const std::vector<Printer> &printers) {
   std::vector<std::string> packets;
   for (const auto &printer : printers) {
-    std::string packet = "HTTP/1.1 200 OK\r\n"
-                         "Server: Buildroot/2018.02-rc3 UPnP/1.0 ssdpd/1.8\r\n"
-                         "Date: " +
-                         getCurrentTime() +
-                         "\r\n"
-                         "Location: " +
-                         printer.address +
-                         "\r\n"
-                         "ST: urn:bambulab-com:device:3dprinter:1\r\n"
-                         "EXT:\r\n"
-                         "USN: " +
-                         printer.usn +
-                         "\r\n"
-                         "Cache-Control: max-age=1800\r\n"
-                         "DevModel.bambu.com: " +
-                         printer.model +
-                         "\r\n"
-                         "DevName.bambu.com: " +
-                         printer.name +
-                         "\r\n"
-                         "DevSignal.bambu.com: " +
-                         printer.signal +
-                         "\r\n"
-                         "DevConnect.bambu.com: lan\r\n"
-                         "DevBind.bambu.com: free\r\n\r\n";
-    packets.push_back(packet);
+    packets.push_back(createPacket(printer));
   }
   return packets;
 }
 
 void sendPackets(const std::vector<std::string> &packets,
-                 const boost::asio::ip::address receiverAddress,
-                 unsigned short receiverPort) {
+                 const udp::endpoint &receiverEndpoint) {
   try {
     boost::asio::io_context ioContext;
     udp::socket socket(ioContext, udp::endpoint(udp::v4(), 0));
-    udp::endpoint receiverEndpoint(receiverAddress, receiverPort);
+
     for (const auto &packet : packets) {
       socket.send_to(boost::asio::buffer(packet), receiverEndpoint);
-      // std::cout << "Sent packet: " << packet << "\n";
+      std::cout << "Sent packet: " << packet << "\n";
     }
   } catch (const std::exception &e) {
     std::cerr << "Error sending packets: " << e.what() << "\n";
   }
 }
 
+void handleIncomingPackets(udp::socket &socket,
+                           const std::vector<std::string> &packets) {
+  std::array<char, 1024> recv_buf;
+  udp::endpoint senderEndpoint;
+
+  while (true) {
+    size_t len =
+        socket.receive_from(boost::asio::buffer(recv_buf), senderEndpoint);
+    std::string receivedPacket(recv_buf.data(), len);
+
+    if (receivedPacket.find("M-SEARCH * HTTP/1.1") != std::string::npos &&
+        receivedPacket.find("urn:bambulab-com:device:3dprinter:1") !=
+            std::string::npos) {
+      std::cout << "M-SEARCH request detected from "
+                << senderEndpoint.address().to_string() << ":"
+                << senderEndpoint.port() << "\n";
+      sendPackets(packets, senderEndpoint);
+    }
+  }
+}
+
+void listenForSSDP(const std::string &listenAddress,
+                   const std::vector<std::string> &packets) {
+  try {
+    boost::asio::io_context ioContext;
+    udp::socket socket(ioContext);
+    udp::endpoint listenEndpoint(
+        boost::asio::ip::address::from_string(Config::MULTICAST_ADDRESS),
+        Config::SSDP_PORT);
+
+    socket.open(listenEndpoint.protocol());
+    socket.set_option(udp::socket::reuse_address(true));
+    socket.bind(listenEndpoint);
+    socket.set_option(boost::asio::ip::multicast::join_group(
+        boost::asio::ip::address::from_string(Config::MULTICAST_ADDRESS)
+            .to_v4(),
+        boost::asio::ip::address::from_string(listenAddress).to_v4()));
+
+    std::cout << "Listening for SSDP packets on multicast address "
+              << Config::MULTICAST_ADDRESS << " port " << Config::SSDP_PORT
+              << "...\n";
+
+    handleIncomingPackets(socket, packets);
+  } catch (const std::exception &e) {
+    std::cerr << "Error: " << e.what() << "\n";
+  }
+}
+
 int main(int argc, char *argv[]) {
   std::vector<Printer> printers;
   std::string listenAddress;
-  std::string configFile = "config.yaml";
-  if (argc > 1) {
-    configFile = argv[1];
-  }
-  loadConfig(configFile, printers, listenAddress);
-  auto packets = generatePackets(printers);
-  try {
-    boost::asio::io_service io_service;
-    boost::asio::ip::address multicast_address =
-        boost::asio::ip::address::from_string(MULTICAST_ADDRESS);
-    boost::asio::ip::address listen_address =
-        boost::asio::ip::address::from_string(listenAddress);
-    udp::socket socket(io_service);
-    udp::endpoint listen_endpoint(multicast_address, SSDP_PORT);
-    socket.open(listen_endpoint.protocol());
-    socket.set_option(udp::socket::reuse_address(true));
-    socket.bind(listen_endpoint);
-    socket.set_option(boost::asio::ip::multicast::join_group(
-        multicast_address.to_v4(), listen_address.to_v4()));
+  std::string configFile = (argc > 1) ? argv[1] : "config.yaml";
 
-    std::cout << "Listening for SSDP packets on multicast address "
-              << MULTICAST_ADDRESS << " port " << SSDP_PORT << "...\n";
+  loadPrintersFromConfig(configFile, printers, listenAddress);
+  auto packets = createPackets(printers);
 
-    while (true) {
-      boost::array<char, 1024> recv_buf;
-      udp::endpoint sender_endpoint;
-      size_t len =
-          socket.receive_from(boost::asio::buffer(recv_buf), sender_endpoint);
-      std::string received_packet(recv_buf.data(), len);
-      // std::cout << "Received packet:\n" << received_packet << "\n";
-      if (received_packet.find("M-SEARCH * HTTP/1.1") != std::string::npos &&
-          received_packet.find("urn:bambulab-com:device:3dprinter:1") !=
-              std::string::npos) {
-        // std::cout << "M-SEARCH request detected from " <<
-        // sender_endpoint.address().to_string()
-        //	<< ":" << sender_endpoint.port() << "\n";
-        sendPackets(packets, sender_endpoint.address(), SSDP_PORT);
-      }
-    }
-  } catch (std::exception &e) {
-    std::cerr << "Error: " << e.what() << "\n";
-  }
+  listenForSSDP(listenAddress, packets);
 
   return 0;
 }
