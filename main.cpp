@@ -115,16 +115,15 @@ void listenForSSDP(const std::string &listenAddress,
     boost::asio::io_context ioContext;
     udp::socket socket(ioContext);
     udp::endpoint listenEndpoint(
-        boost::asio::ip::address::from_string(Config::MULTICAST_ADDRESS),
+        boost::asio::ip::make_address(Config::MULTICAST_ADDRESS),
         Config::SSDP_PORT);
 
     socket.open(listenEndpoint.protocol());
     socket.set_option(udp::socket::reuse_address(true));
     socket.bind(listenEndpoint);
     socket.set_option(boost::asio::ip::multicast::join_group(
-        boost::asio::ip::address::from_string(Config::MULTICAST_ADDRESS)
-            .to_v4(),
-        boost::asio::ip::address::from_string(listenAddress).to_v4()));
+        boost::asio::ip::make_address(Config::MULTICAST_ADDRESS).to_v4(),
+        boost::asio::ip::make_address(listenAddress).to_v4()));
 
     std::cout << "Listening for SSDP packets on multicast address "
               << Config::MULTICAST_ADDRESS << " port " << Config::SSDP_PORT
